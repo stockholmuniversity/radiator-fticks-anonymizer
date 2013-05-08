@@ -1,0 +1,91 @@
+#!/usr/bin/perl
+# Copyright (c) 2013, Johan Carlquist <jocar@su.se>, IT Services, Stockholm University
+# All rights reserved.
+# 
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+# 
+# Redistributions of source code must retain the above copyright notice, this
+# list of conditions and the following disclaimer.
+# 
+# Redistributions in binary form must reproduce the above copyright notice, this
+# list of conditions and the following disclaimer in the documentation and/or
+# other materials provided with the distribution.
+# 
+# Neither the name of Stockholm University nor the names of its contributors may
+# be used to endorse or promote products derived from this software without
+# specific prior written permission.
+# 
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+# This Radiator hook anonymizes the MAC address so the user data can be sent upstream
+# without violating the users privacy.
+
+# To use this hook you need to specify a key in the Radiator config:
+# DefineGlobalVar FTicks_hash_key KEY
+#
+# The default behaviour is to save the vendor part of the address and hash the rest.
+# If you like to hash the whole address you can add do this by adding following to the radiator config:
+# DefineGlobalVar FTicks_hash_all yes
+#
+# Then use it as a ordinary hook:
+# PostAuthHook file:"/local/radiator/hooks/fticks_anonymizer"
+#
+# And syslog with the new hashed variable created in the hook (X-Calling-Station-Id-Hashed):
+# SuccessFormat F-TICKS/eduroam/1.0#REALM=%R#VISCOUNTRY=%{eduroam-SP-Country}#VISINST=%{Operator-Name}#CSI=%{X-Calling-Station-Id-Hashed}#RESULT=OK#
+# FailureFormat F-TICKS/eduroam/1.0#REALM=%R#VISCOUNTRY=%{eduroam-SP-Country}#VISINST=%{Operator-Name}#CSI=%{X-Calling-Station-Id-Hashed}#RESULT=FAIL#
+
+sub {
+    use warnings;
+    use strict;
+    use Digest::SHA qw(hmac_sha256_hex);
+
+    my $p = ${$_[0]};
+
+    my $key = &main::getVariable('FTicks_hash_key');
+
+    my $csi = $p->get_attr('Calling-Station-Id');
+    $csi = lc("$csi");
+
+    my $csi_original = $csi;
+
+    $csi =~ s/[^[:xdigit:]]//g;
+
+    if (length($csi) != 12){
+        &main::log($main::LOG_DEBUG, "The MAC address \"$csi_original\" seems invalid. The CSI for this F-ticks will be empty.");
+        return;
+    }
+
+    my $hash_all = &main::getVariable('FTicks_hash_all');
+    if ($hash_all) {
+        $csi = hmac_sha256_hex($csi, $key);
+    }
+    else {
+        # Handle Ciscos Single Hyphen MAC adress delimiter, e.g: deadbe-eefcaf
+        if ($csi_original =~ m/^.{6}-.{6}$/) {
+            $csi =~ m/^(.{6})(.{6})$/;
+            $csi =  "$1" . "-" . hmac_sha256_hex($2, $key);
+        }
+        # Handle Ciscos MAC adress delimiters; Colon, Hyphen and No Delimiter.
+        # e.g: de:ad:be:ee:fc:af, de-ad-be-ee-fc-af or deadbeeefcaf.
+        else {
+            my $half_length  = (length($csi_original) == 12) ? 6 : 9;
+            $csi_original =~ /^(.{$half_length})/;
+            my $first_half = $1;
+            $csi =~ /(.{6})$/;
+            my $second_half = $1;
+            $csi = "$first_half" . hmac_sha256_hex($second_half, $key);
+        }
+    }
+
+    $p->add_attr('X-Calling-Station-Id-Hashed', $csi);
+}
