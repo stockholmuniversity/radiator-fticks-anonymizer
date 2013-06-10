@@ -50,6 +50,14 @@ sub {
     use Digest::SHA qw(hmac_sha256_hex);
 
     my $p = ${$_[0]};
+    my $result = $_[2];
+
+    if (! ($p->code() eq 'Access-Request')){
+        return 
+    }
+    if  (! ($$result == $main::ACCEPT || $$result == $main::REJECT)){
+        return
+    }
 
     my $key = &main::getVariable('FTicks_hash_key');
 
